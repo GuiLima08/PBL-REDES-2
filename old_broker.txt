@@ -1,0 +1,227 @@
+package main
+
+import (
+	"bufio"
+	"container/heap"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+var (
+	//portaBrokers  = ":9001"
+	//portaClientes = ":9002"
+	//portaDrones   = ":9003"
+
+	clientes = make(map[net.Conn]int)
+	clientMU = sync.RWMutex{}
+	queueMU  = sync.RWMutex{}
+)
+
+type Process struct {
+	client   net.Conn // Conexão do cliente que enviou o processo
+	id       string   // Identificador único do processo
+	priority int      // Prioridade de 1 a 10
+	timeLeft int      // Tempo restante para execução em segundos
+}
+
+type PriorityQueue []Process
+
+func (pq PriorityQueue) Len() int { return len(pq) }
+
+func (pq PriorityQueue) Less(i, j int) bool {
+	if pq[i].priority != pq[j].priority {
+		return pq[i].priority > pq[j].priority
+	}
+	return pq[i].timeLeft < pq[j].timeLeft
+}
+
+func (pq PriorityQueue) Swap(i, j int) {
+	pq[i], pq[j] = pq[j], pq[i]
+}
+
+func (pq *PriorityQueue) Push(x any) {
+	*pq = append(*pq, x.(Process))
+}
+
+func (pq *PriorityQueue) Pop() any {
+	old := *pq
+	n := len(old)
+	item := old[n-1]
+	*pq = old[0 : n-1]
+	return item
+}
+
+var Queue = make(PriorityQueue, 0) // Inicializa a fila de processos
+
+func main() {
+	if len(os.Args) < 4 { // Verifica se os IPs dos brokers foram fornecidos como argumentos
+		log.Fatalf("ERR: Incorrect command usage\nCorrect usage: go run server.go <p2p_port> <client_port> <drone_port> <broker1_ip:port> <broker2_ip:port> ... <brokerN_ip:port>")
+	}
+
+	brokerIPs := os.Args[4:] // Lista de IPs dos brokers fornecidos como argumentos
+	portaBrokers := ":" + os.Args[1]
+	portaClientes := ":" + os.Args[2]
+	portaDrones := ":" + os.Args[3]
+
+	// Inicia conexões com os outros brokers em goroutines separadas
+	for _, brokerIP := range brokerIPs {
+		go dialBroker(brokerIP)
+	}
+
+
+	// Iniciamos cada listener em sua própria goroutine para rodarem em paralelo
+	go iniciarServidorTCP("Broker-to-Broker", portaBrokers, handleBroker)
+	go iniciarServidorTCP("Cliente", portaClientes, handleClient)
+	go iniciarServidorTCP("Drone", portaDrones, handleDrone)
+
+	log.Println("Broker iniciado com sucesso.")
+	log.Printf("Escutando Brokers na porta %s...\n", portaBrokers)
+	log.Printf("Escutando Clientes na porta %s...\n", portaClientes)
+	log.Printf("Escutando Drones na porta %s...\n", portaDrones)
+
+	for {
+		time.Sleep(1 * time.Second)
+		// Imprime a fila de processos a cada segundo
+		queueMU.RLock()
+		log.Printf("Fila de Processos:\n")
+		for _, process := range Queue {
+			log.Printf("  - %+v\n", process)
+		}
+		queueMU.RUnlock()
+	}
+}
+
+// iniciarServidorTCP cria o listener e aceita conexões em um loop infinito
+func iniciarServidorTCP(nome, porta string, handler func(net.Conn)) {
+	listener, err := net.Listen("tcp", porta)
+	if err != nil {
+		log.Fatalf("Erro ao iniciar servidor %s na porta %s: %v", nome, porta, err)
+	}
+	defer listener.Close()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Printf("Erro ao aceitar conexão %s: %v", nome, err)
+			continue
+		}
+		// Delega a conexão para o handler específico em uma nova goroutine
+		go handler(conn)
+	}
+}
+
+func handleBroker(conn net.Conn) {
+	defer func() {
+		log.Printf("[BROKER] Conexão encerrada: %s\n", conn.RemoteAddr().String())
+		conn.Close()
+	}()
+
+	log.Printf("[BROKER] Novo broker conectado: %s\n", conn.RemoteAddr().String())
+
+	scanner := bufio.NewScanner(conn)
+
+	for scanner.Scan() {
+		linha := scanner.Text()
+		log.Printf("[BROKER %s] Recebido: %s\n", conn.RemoteAddr().String(), linha)
+	}
+}
+
+func handleClient(conn net.Conn) {
+	defer func() {
+		log.Printf("[CLIENTE] Conexão encerrada: %s\n", conn.RemoteAddr().String())
+		conn.Close()
+	}()
+
+	log.Printf("[CLIENTE] Novo cliente conectado: %s\n", conn.RemoteAddr().String())
+
+	scanner := bufio.NewScanner(conn)
+
+	for scanner.Scan() {
+		linha := scanner.Text()
+		//log.Printf("[CLIENTE %s] Recebido: %s\n", conn.RemoteAddr().String(), linha)
+
+		parts := strings.Split(linha, "/")
+		if len(parts) != 2 {
+			log.Printf("[CLIENTE %s] Mensagem inválida: %s\n", conn.RemoteAddr().String(), linha)
+			continue
+		}
+
+		kind := parts[0]
+		data := parts[1]
+
+		switch kind {
+
+		case "P": // Processo
+			log.Printf("[CLIENTE %s] Processo recebido: %s\n", conn.RemoteAddr().String(), data)
+			processParts := strings.Split(data, ",")
+			if len(processParts) != 2 {
+				log.Printf("[CLIENTE %s] Formato de processo inválido: %s\n", conn.RemoteAddr().String(), data)
+				continue
+			}
+
+			priority, err1 := strconv.Atoi(processParts[0])
+			timeLeft, err2 := strconv.Atoi(processParts[1])
+			if err1 != nil || err2 != nil {
+				log.Printf("[CLIENTE %s] Erro ao converter valores do processo: %s\n", conn.RemoteAddr().String(), data)
+				continue
+			}
+			id := genProcessId(conn)
+			process := Process{id: id, priority: priority, timeLeft: timeLeft, client: conn}
+
+			queueMU.Lock()
+			heap.Push(&Queue, process)
+			queueMU.Unlock()
+
+			log.Printf("[CLIENTE %s] Processo criado: %+v\n", conn.RemoteAddr().String(), process)
+		}
+	}
+
+}
+
+func handleDrone(conn net.Conn) {
+	defer func() {
+		log.Printf("[DRONE] Conexão encerrada: %s\n", conn.RemoteAddr().String())
+		conn.Close()
+	}()
+
+	log.Printf("[DRONE] Novo drone conectado: %s\n", conn.RemoteAddr().String())
+
+	scanner := bufio.NewScanner(conn)
+
+	for scanner.Scan() {
+		linha := scanner.Text()
+		log.Printf("[DRONE %s] Recebido: %s\n", conn.RemoteAddr().String(), linha)
+	}
+}
+
+func dialBroker(brokerIP string) {
+	for {
+		_, err := net.Dial("tcp", brokerIP)
+		if err != nil {
+			log.Printf("Erro ao conectar ao broker %s: %v", brokerIP, err)
+			log.Printf("Tentando conectar ao broker %s novamente em 5 segundos...", brokerIP)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		log.Printf("Conexão estabelecida com o broker %s\n", brokerIP)
+		for {
+			time.Sleep(100 * time.Second)
+		}
+	}
+}
+
+func genProcessId(conn net.Conn) string {
+	clientMU.Lock()
+	cont := strconv.Itoa(clientes[conn])
+	clientes[conn]++
+	clientMU.Unlock()
+	ip := conn.RemoteAddr().String()
+	return fmt.Sprintf("%s-%04s", ip, cont)
+}
