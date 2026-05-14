@@ -19,10 +19,7 @@ func main() {
 	fixedTime := flag.Int("time", 0, "Tempo fixo (segundos). Se 0, será aleatório.")
 
 	flag.Parse()
-
-	// Inicializa a semente randômica
-	rand.Seed(time.Now().UnixNano())
-
+	
 	fmt.Println("==================================================")
 	fmt.Println(" INICIANDO RACE TEST DISTRIBUÍDO")
 	fmt.Printf("Alvo: %s\n", *addr)
