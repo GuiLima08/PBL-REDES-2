@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ var (
 	// Dicionário de drones conectados. Se o ponteiro for nil, o drone está livre.
 	drones  = make(map[net.Conn]*Process)
 	droneMU = sync.RWMutex{}
+
 
 	Queue = make(PriorityQueue, 0) // Inicializa a fila de processos
 
@@ -97,10 +99,25 @@ func main() {
 
 		log.Printf("--- Status Atual ---")
 		log.Printf("Fila de Processos (%d):", len(Queue))
-		for _, process := range Queue {
+		
+		// 1. Cria uma cópia exata da fila atual
+		filaExibicao := make([]Process, len(Queue))
+		copy(filaExibicao, Queue)
+
+		// 2. Ordena a cópia linearmente seguindo a mesma regra do seu Heap
+		sort.Slice(filaExibicao, func(i, j int) bool {
+			if filaExibicao[i].Priority != filaExibicao[j].Priority {
+				return filaExibicao[i].Priority > filaExibicao[j].Priority
+			}
+			return filaExibicao[i].TimeLeft < filaExibicao[j].TimeLeft
+		})
+
+		// 3. Printa a cópia (agora visualmente ordenada)
+		for _, process := range filaExibicao {
 			log.Printf("  - %+v", process)
 		}
 
+		log.Printf("--------------------")
 		log.Printf("Drones Conectados (%d):", len(drones))
 		for conn, process := range drones {
 			if process == nil {
@@ -109,7 +126,18 @@ func main() {
 				log.Printf("  - Drone %s: Executando %s", conn.RemoteAddr().String(), process.ID)
 			}
 		}
+
 		log.Printf("--------------------")
+		log.Printf("Sensores Conectados (%d):", len(clientes))
+		for conn := range clientes{
+			log.Printf("  - Sensor %s", conn.RemoteAddr().String())
+		}
+
+		log.Printf("--------------------")
+		log.Printf("Brokers vizinhos (%d):", len(adjacentBrokers))
+		for addr := range adjacentBrokers{
+			log.Printf("  - Broker %s", addr)
+		}
 
 		droneMU.RUnlock()
 		queueMU.RUnlock()
