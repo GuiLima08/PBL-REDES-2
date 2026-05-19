@@ -26,7 +26,7 @@ var (
 
 	adjacentBrokers = make(map[string]net.Conn)
 	adjMU           = sync.RWMutex{}
-	myDroneAddr     string // O endereço (porta) onde este broker ouve drones
+	portaDrones     string // O endereço (porta) onde este broker ouve drones
 )
 
 type Process struct {
@@ -71,12 +71,7 @@ func main() {
 	brokerIPs := os.Args[4:]
 	portaBrokers := ":" + os.Args[1]
 	portaClientes := ":" + os.Args[2]
-	portaDrones := ":" + os.Args[3]
-
-	// Captura o IP real da máquina na rede (ex: 192.168.0.15)
-	ipReal := getOutboundIP()
-	myDroneAddr = ipReal + portaDrones
-	log.Printf("[SISTEMA] IP principal desta máquina detectado como: %s", ipReal)
+	portaDrones = ":" + os.Args[3]
 
 	// Inicializa a estrutura de heap
 	heap.Init(&Queue)
@@ -207,6 +202,9 @@ func dispatch() {
 
 func handleBroker(conn net.Conn) {
 	remoteAddr := conn.RemoteAddr().String()
+	status := true
+
+	ipPedinte, _, _ := net.SplitHostPort(remoteAddr)
 
 	// 1. Registra este broker na lista de adjacentes assim que ele conecta
 	adjMU.Lock()
@@ -215,12 +213,12 @@ func handleBroker(conn net.Conn) {
 
 	defer func() {
 		log.Printf("[BROKER] Conexão encerrada: %s\n", remoteAddr)
-		
+
 		// 2. Remove da lista ao desconectar para evitar chamadas fantasmas
 		adjMU.Lock()
 		delete(adjacentBrokers, remoteAddr)
 		adjMU.Unlock()
-		
+
 		conn.Close()
 	}()
 
@@ -230,16 +228,17 @@ func handleBroker(conn net.Conn) {
 
 	for scanner.Scan() {
 		linha := strings.TrimSpace(scanner.Text())
-		
+
 		// Mantendo o seu log original para monitoramento!
 		log.Printf("[BROKER %s] Recebido: %s\n", remoteAddr, linha)
 
 		// 3. Nova lógica: interpretando a mensagem recebida
 		parts := strings.Split(linha, "/")
-		
-		if len(parts) >= 2 && parts[0] == "REQ_DRONE" {
-			targetBrokerAddr := parts[1]
-			
+
+		if len(parts) >= 2 && parts[0] == "REQ_DRONE" && status {
+			targetBrokerPort := parts[1]
+			targetBrokerAddr := ipPedinte + targetBrokerPort
+
 			// Verifica se este broker tem processos próprios na fila (Prioridade Local)
 			queueMU.RLock()
 			hasProcesses := len(Queue) > 0
@@ -263,10 +262,10 @@ func handleBroker(conn net.Conn) {
 
 			if idleDrone != nil {
 				log.Printf("[BROKER] Emprestando drone ocioso. Redirecionando para %s\n", targetBrokerAddr)
-				
+
 				// Manda o comando pro drone se desconectar daqui e ir pro outro broker
 				idleDrone.Write([]byte("REDIRECT/" + targetBrokerAddr + "\n"))
-				
+
 				// Libera o drone do meu mapa local, pois ele já vai fechar a conexão
 				delete(drones, idleDrone)
 				droneMU.Unlock()
@@ -427,8 +426,7 @@ func dialBroker(brokerIP string) {
 		adjacentBrokers[brokerIP] = conn
 		adjMU.Unlock()
 
-		// MONITORAMENTO ATIVO: Substituímos o seu loop de Sleep por um Scanner.
-		// Isso mantém a conexão aberta e permite processar mensagens (como RESP_NO_DRONE).
+		// MONITORAMENTO ATIVO
 		scanner := bufio.NewScanner(conn)
 		for scanner.Scan() {
 			linha := scanner.Text()
@@ -477,26 +475,10 @@ func monitorAndAskForDrones(ips []string) {
 
 			if ok {
 				log.Printf("[SISTEMA] Pedindo drone ao Broker %s\n", target)
-				conn.Write([]byte("REQ_DRONE/" + myDroneAddr + "\n"))
+				conn.Write([]byte("REQ_DRONE/" + portaDrones + "\n"))
 			}
 
 			index = (index + 1) % len(ips)
 		}
 	}
-}
-
-// getOutboundIP descobre o IP principal da máquina na rede local
-func getOutboundIP() string {
-	// Usamos um endereço externo (Google DNS) apenas para forçar o SO 
-	// a determinar a rota de saída. Nenhum pacote real é enviado.
-	conn, err := net.Dial("udp", "8.8.8.8:80")
-	if err != nil {
-		// Se a máquina estiver completamente sem internet/rede, cai num fallback
-		log.Printf("-!- Aviso: Não foi possível determinar o IP da rede. Usando localhost.")
-		return "127.0.0.1"
-	}
-	defer conn.Close()
-
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
-	return localAddr.IP.String()
 }
