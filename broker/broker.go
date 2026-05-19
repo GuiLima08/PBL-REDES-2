@@ -25,15 +25,19 @@ var (
 	Queue = make(PriorityQueue, 0) // Inicializa a fila de processos
 
 	adjacentBrokers = make(map[string]net.Conn)
+	
+	// NOVO: Dicionário que mapeia a conexão com o endereço exato do drone vizinho
+	knownDroneAddrs = make(map[string]string) 
 	adjMU           = sync.RWMutex{}
-	portaDrones     string // O endereço (porta) onde este broker ouve drones
+	
+	portaDrones string // O endereço (porta) onde este broker ouve drones
 )
 
 type Process struct {
-	Client   string // Alterado para string (IP do cliente)
-	ID       string // Identificador único do processo
-	Priority int    // Prioridade de 1 a 10
-	TimeLeft int    // Tempo restante para execução em segundos
+	Client   string
+	ID       string
+	Priority int
+	TimeLeft int
 }
 
 type PriorityQueue []Process
@@ -47,13 +51,9 @@ func (pq PriorityQueue) Less(i, j int) bool {
 	return pq[i].TimeLeft < pq[j].TimeLeft
 }
 
-func (pq PriorityQueue) Swap(i, j int) {
-	pq[i], pq[j] = pq[j], pq[i]
-}
+func (pq PriorityQueue) Swap(i, j int) { pq[i], pq[j] = pq[j], pq[i] }
 
-func (pq *PriorityQueue) Push(x any) {
-	*pq = append(*pq, x.(Process))
-}
+func (pq *PriorityQueue) Push(x any) { *pq = append(*pq, x.(Process)) }
 
 func (pq *PriorityQueue) Pop() any {
 	old := *pq
@@ -65,7 +65,7 @@ func (pq *PriorityQueue) Pop() any {
 
 func main() {
 	if len(os.Args) < 4 {
-		log.Fatalf("ERR: Incorrect command usage\nCorrect usage: go run server.go <p2p_port> <client_port> <drone_port> <broker1_ip:port> <broker2_ip:port> ... <brokerN_ip:port>")
+		log.Fatalf("ERR: Incorrect command usage\nCorrect usage: go run server.go <p2p_port> <client_port> <drone_port> <broker1_ip:port> ...")
 	}
 
 	brokerIPs := os.Args[4:]
@@ -73,7 +73,6 @@ func main() {
 	portaClientes := ":" + os.Args[2]
 	portaDrones = ":" + os.Args[3]
 
-	// Inicializa a estrutura de heap
 	heap.Init(&Queue)
 
 	for _, brokerIP := range brokerIPs {
@@ -134,7 +133,6 @@ func iniciarServidorTCP(nome, porta string, handler func(net.Conn)) {
 	}
 }
 
-// Helpers para verificacao de prioridade
 func isHigherPriority(a, b Process) bool {
 	if a.Priority != b.Priority {
 		return a.Priority > b.Priority
@@ -149,7 +147,6 @@ func isWorsePriority(a, b Process) bool {
 	return a.TimeLeft > b.TimeLeft
 }
 
-// dispatch é o cerebro do sistema. Pega os processos da fila e atribui aos drones.
 func dispatch() {
 	queueMU.Lock()
 	droneMU.Lock()
@@ -157,44 +154,38 @@ func dispatch() {
 	defer droneMU.Unlock()
 
 	for len(Queue) > 0 {
-		topProcess := Queue[0] // Espia o processo de maior prioridade
+		topProcess := Queue[0]
 
 		var selectedDrone net.Conn
 		var isFree bool
 		var worstDrone net.Conn
 		var worstProc *Process
 
-		// Procura um drone livre ou identifica o drone executando o processo de menor prioridade
 		for conn, proc := range drones {
 			if proc == nil {
 				selectedDrone = conn
 				isFree = true
 				break
 			}
-
 			if worstProc == nil || isWorsePriority(*proc, *worstProc) {
 				worstProc = proc
 				worstDrone = conn
 			}
 		}
 
-		// Se nao achou drone livre, verifica se vale a pena interromper o pior drone
 		if !isFree {
 			if worstProc != nil && isHigherPriority(topProcess, *worstProc) {
 				selectedDrone = worstDrone
 			}
 		}
 
-		// Se encontrou um drone viavel (livre ou que pode ser interrompido)
 		if selectedDrone != nil {
 			p := heap.Pop(&Queue).(Process)
-			drones[selectedDrone] = &p // Atualiza o estado no broker
+			drones[selectedDrone] = &p
 
-			// Envia via TCP usando o buffer definido
 			msg := fmt.Sprintf("%s,%s,%d,%d\n", p.Client, p.ID, p.Priority, p.TimeLeft)
 			selectedDrone.Write([]byte(msg))
 		} else {
-			// Se o topo da fila nao vence de nenhum drone ocupado, nenhum outro vencera
 			break
 		}
 	}
@@ -202,55 +193,58 @@ func dispatch() {
 
 func handleBroker(conn net.Conn) {
 	remoteAddr := conn.RemoteAddr().String()
-	status := true
-
 	ipPedinte, _, _ := net.SplitHostPort(remoteAddr)
 
-	// 1. Registra este broker na lista de adjacentes assim que ele conecta
 	adjMU.Lock()
 	adjacentBrokers[remoteAddr] = conn
 	adjMU.Unlock()
 
+	// --- HANDSHAKE INICIAL --- Envia minha porta de drones para o broker que conectou
+	minhaPorta := strings.TrimPrefix(portaDrones, ":")
+	conn.Write([]byte("HELLO_BROKER/" + minhaPorta + "\n"))
+
 	defer func() {
 		log.Printf("[BROKER] Conexão encerrada: %s\n", remoteAddr)
-
-		// 2. Remove da lista ao desconectar para evitar chamadas fantasmas
 		adjMU.Lock()
 		delete(adjacentBrokers, remoteAddr)
+		delete(knownDroneAddrs, remoteAddr) // Limpa o vizinho
 		adjMU.Unlock()
-
 		conn.Close()
 	}()
 
 	log.Printf("[BROKER] Novo broker conectado: %s\n", remoteAddr)
-
 	scanner := bufio.NewScanner(conn)
 
 	for scanner.Scan() {
 		linha := strings.TrimSpace(scanner.Text())
-
-		// Mantendo o seu log original para monitoramento!
-		log.Printf("[BROKER %s] Recebido: %s\n", remoteAddr, linha)
-
-		// 3. Nova lógica: interpretando a mensagem recebida
 		parts := strings.Split(linha, "/")
 
-		if len(parts) >= 2 && parts[0] == "REQ_DRONE" && status {
-			targetBrokerPort := parts[1]
-			targetBrokerAddr := ipPedinte + targetBrokerPort
+		// --- RECEBIMENTO DO HANDSHAKE DO VIZINHO ---
+		if len(parts) >= 2 && parts[0] == "HELLO_BROKER" {
+			portaDoVizinho := parts[1]
+			addrDroneVizinho := ipPedinte + ":" + portaDoVizinho
+			
+			adjMU.Lock()
+			knownDroneAddrs[remoteAddr] = addrDroneVizinho
+			adjMU.Unlock()
+			
+			log.Printf("[HANDSHAKE] Vizinho %s registrou sua porta de drones: %s\n", ipPedinte, addrDroneVizinho)
+			continue
+		}
 
-			// Verifica se este broker tem processos próprios na fila (Prioridade Local)
+		if len(parts) >= 2 && parts[0] == "REQ_DRONE" {
+			targetBrokerPort := parts[1]
+			targetBrokerAddr := ipPedinte + ":" + targetBrokerPort // Monta o endereço dinâmico!
+
 			queueMU.RLock()
 			hasProcesses := len(Queue) > 0
 			queueMU.RUnlock()
 
 			if hasProcesses {
-				// Se tenho trabalho pendente, recuso o empréstimo
 				conn.Write([]byte("RESP_NO_DRONE\n"))
 				continue
 			}
 
-			// Procura um drone ocioso nos meus registros
 			var idleDrone net.Conn
 			droneMU.Lock()
 			for dConn, proc := range drones {
@@ -262,15 +256,10 @@ func handleBroker(conn net.Conn) {
 
 			if idleDrone != nil {
 				log.Printf("[BROKER] Emprestando drone ocioso. Redirecionando para %s\n", targetBrokerAddr)
-
-				// Manda o comando pro drone se desconectar daqui e ir pro outro broker
 				idleDrone.Write([]byte("REDIRECT/" + targetBrokerAddr + "\n"))
-
-				// Libera o drone do meu mapa local, pois ele já vai fechar a conexão
 				delete(drones, idleDrone)
 				droneMU.Unlock()
 			} else {
-				// Se não achou nenhum livre
 				droneMU.Unlock()
 				conn.Write([]byte("RESP_NO_DRONE\n"))
 			}
@@ -338,12 +327,24 @@ func handleClient(conn net.Conn) {
 }
 
 func handleDrone(conn net.Conn) {
-	// Adiciona o drone ao mapa assim que ele se conecta
 	droneMU.Lock()
 	drones[conn] = nil
 	droneMU.Unlock()
 
-	// Verifica se ha algo na fila que ja pode ser enviado
+	// --- HANDSHAKE DRONE-BROKER ---
+	adjMU.RLock()
+	var neighbors []string
+	for _, addr := range knownDroneAddrs {
+		neighbors = append(neighbors, addr)
+	}
+	adjMU.RUnlock()
+
+	if len(neighbors) > 0 {
+		neighborStr := strings.Join(neighbors, ",")
+		conn.Write([]byte("NEIGHBORS/" + neighborStr + "\n"))
+	}
+	// ---------------------------------
+
 	dispatch()
 
 	defer func() {
@@ -354,7 +355,6 @@ func handleDrone(conn net.Conn) {
 		delete(drones, conn)
 		droneMU.Unlock()
 
-		// Se o drone caiu enquanto realizava um processo, devolve o processo para a fila
 		if proc != nil {
 			log.Printf("[DRONE %s] Recuperando processo %s devido a queda.\n", conn.RemoteAddr().String(), proc.ID)
 			queueMU.Lock()
@@ -362,7 +362,6 @@ func handleDrone(conn net.Conn) {
 			queueMU.Unlock()
 			dispatch()
 		}
-
 		conn.Close()
 	}()
 
@@ -387,22 +386,18 @@ func handleDrone(conn net.Conn) {
 
 			if p.TimeLeft == 0 {
 				log.Printf("[DRONE %s] Processo concluído: %s\n", conn.RemoteAddr().String(), p.ID)
-
-				// Libera o drone verificando se o processo concluido era de fato o que estava alocado
 				droneMU.Lock()
 				if drones[conn] != nil && drones[conn].ID == p.ID {
 					drones[conn] = nil
 				}
 				droneMU.Unlock()
 			} else {
-				// Processo devolvido por interrupcao. Retorna para a fila.
 				log.Printf("[DRONE %s] Processo interrompido retornado: %s\n", conn.RemoteAddr().String(), p.ID)
 				queueMU.Lock()
 				heap.Push(&Queue, p)
 				queueMU.Unlock()
 			}
 
-			// O drone terminou ou devolveu o processo antigo; tenta mandar trabalho novo
 			dispatch()
 		}
 	}
@@ -410,36 +405,46 @@ func handleDrone(conn net.Conn) {
 
 func dialBroker(brokerIP string) {
 	for {
-		// Capturamos a conexão 'conn' em vez de descartá-la com '_'
 		conn, err := net.Dial("tcp", brokerIP)
 		if err != nil {
-			log.Printf("Erro ao conectar ao broker %s: %v", brokerIP, err)
-			log.Printf("Tentando conectar ao broker %s novamente em 5 segundos...", brokerIP)
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
 		log.Printf("Conexão estabelecida com o broker %s\n", brokerIP)
 
-		// REGISTRO: Adicionamos a conexão ao mapa de adjacentes para podermos enviar REQ_DRONE
 		adjMU.Lock()
 		adjacentBrokers[brokerIP] = conn
 		adjMU.Unlock()
 
-		// MONITORAMENTO ATIVO
+		// --- HANDSHAKE INICIAL ---
+		minhaPorta := strings.TrimPrefix(portaDrones, ":")
+		conn.Write([]byte("HELLO_BROKER/" + minhaPorta + "\n"))
+
 		scanner := bufio.NewScanner(conn)
 		for scanner.Scan() {
 			linha := scanner.Text()
-			log.Printf("[BROKER ADJACENTE %s] Mensagem: %s\n", brokerIP, linha)
+			
+			// --- RECEBIMENTO DO HANDSHAKE DO VIZINHO ---
+			if strings.HasPrefix(linha, "HELLO_BROKER/") {
+				portaDoVizinho := strings.Split(linha, "/")[1]
+				ip, _, _ := net.SplitHostPort(brokerIP)
+				addrDroneVizinho := ip + ":" + portaDoVizinho
+				
+				adjMU.Lock()
+				knownDroneAddrs[brokerIP] = addrDroneVizinho
+				adjMU.Unlock()
+				log.Printf("[HANDSHAKE] Vizinho %s registrou sua porta de drones: %s\n", ip, addrDroneVizinho)
+				continue
+			}
 		}
 
-		// LIMPEZA: Se o scanner sair do loop, a conexão caiu ou foi encerrada.
 		log.Printf("A conexão com o broker %s foi interrompida. Removendo da lista de adjacentes.\n", brokerIP)
 		adjMU.Lock()
 		delete(adjacentBrokers, brokerIP)
+		delete(knownDroneAddrs, brokerIP)
 		adjMU.Unlock()
 
-		// Aguarda antes de tentar reconectar ao broker que caiu
 		time.Sleep(5 * time.Second)
 	}
 }
@@ -462,9 +467,6 @@ func monitorAndAskForDrones(ips []string) {
 		numProc := len(Queue)
 		queueMU.RUnlock()
 
-		// Nova Regra: Se há qualquer processo sobrando na fila (numProc > 0), 
-		// significa que todos os meus drones estão ocupados (ou não tenho drones),
-		// então eu peço drones emprestados aos vizinhos!
 		if numProc > 0 && len(ips) > 0 {
 			target := ips[index]
 			adjMU.RLock()
@@ -473,7 +475,8 @@ func monitorAndAskForDrones(ips []string) {
 
 			if ok {
 				log.Printf("[SISTEMA] Fila com %d processos pendentes. Pedindo drone extra ao Broker %s\n", numProc, target)
-				conn.Write([]byte("REQ_DRONE/" + portaDrones + "\n"))
+				minhaPorta := strings.TrimPrefix(portaDrones, ":")
+				conn.Write([]byte("REQ_DRONE/" + minhaPorta + "\n"))
 			}
 
 			index = (index + 1) % len(ips)
