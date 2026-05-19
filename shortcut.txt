@@ -1,0 +1,13 @@
+docker run --rm -p 8001:8001 -p 8002:8002 -p 8003:8003 bdaemonis/hormuz-broker:latest 8001 8002 8003 <ip1>:8001 <ip2>:8001 ...
+
+docker run -d --rm bdaemonis/hormuz-sensor:latest <ip>:8002
+
+docker run -it --rm bdaemonis/hormuz-user:latest <ip>:8002
+
+docker run --rm bdaemonis/hormuz-drone:latest <ip>:8003
+
+docker run --rm bdaemonis/hormuz-racetest:latest -addr=<ip>8002 -users=50 -msgs=10 -fixedPri=0 -fixedTime=0
+
+docker container prune -f
+docker image prune -a -f
+docker images
