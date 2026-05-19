@@ -458,23 +458,21 @@ func monitorAndAskForDrones(ips []string) {
 	for {
 		time.Sleep(10 * time.Second)
 
-		droneMU.RLock()
-		numDrones := len(drones)
-		droneMU.RUnlock()
-
 		queueMU.RLock()
 		numProc := len(Queue)
 		queueMU.RUnlock()
 
-		// Se tenho processos mas não tenho drones, peço um
-		if numDrones == 0 && numProc > 0 && len(ips) > 0 {
+		// Nova Regra: Se há qualquer processo sobrando na fila (numProc > 0), 
+		// significa que todos os meus drones estão ocupados (ou não tenho drones),
+		// então eu peço drones emprestados aos vizinhos!
+		if numProc > 0 && len(ips) > 0 {
 			target := ips[index]
 			adjMU.RLock()
 			conn, ok := adjacentBrokers[target]
 			adjMU.RUnlock()
 
 			if ok {
-				log.Printf("[SISTEMA] Pedindo drone ao Broker %s\n", target)
+				log.Printf("[SISTEMA] Fila com %d processos pendentes. Pedindo drone extra ao Broker %s\n", numProc, target)
 				conn.Write([]byte("REQ_DRONE/" + portaDrones + "\n"))
 			}
 
