@@ -10,10 +10,10 @@ import (
 )
 
 // Função de reconexão cíclica
-func connectWithRetry(serverIP, serverPort string) net.Conn {
+func connectWithRetry(serverIP string) net.Conn {
 	for {
-		log.Printf("Tentando conectar ao servidor em %s:%s...\n", serverIP, serverPort)
-		conn, err := net.Dial("tcp", serverIP+":"+serverPort)
+		log.Printf("Tentando conectar ao servidor em %s...\n", serverIP)
+		conn, err := net.Dial("tcp", serverIP)
 		if err == nil {
 			log.Println("Conexão estabelecida com sucesso!")
 			return conn
@@ -24,14 +24,13 @@ func connectWithRetry(serverIP, serverPort string) net.Conn {
 }
 
 func main() {
-	if len(os.Args) != 3 {
-		log.Fatal("Uso: go run sensor.go <server_ip> <port>")
+	if len(os.Args) != 2 {
+		log.Fatal("Uso: go run sensor.go <server_ip:port>")
 	}
 	serverIP := os.Args[1]
-	serverPort := os.Args[2]
 
 	// Inicia a conexão
-	tcpConn := connectWithRetry(serverIP, serverPort)
+	tcpConn := connectWithRetry(serverIP)
 	defer func() {
 		if tcpConn != nil {
 			tcpConn.Close()
@@ -58,7 +57,7 @@ func main() {
 				tcpConn.Close()
 				
 				// Reconecta
-				tcpConn = connectWithRetry(serverIP, serverPort)
+				tcpConn = connectWithRetry(serverIP)
 				
 				// Após conectar, tenta dar o Write da mensagem pendente novamente
 				continue

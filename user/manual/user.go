@@ -12,10 +12,10 @@ import (
 )
 
 // Função que fica tentando conectar infinitamente a cada 5 segundos
-func connectWithRetry(serverIP, serverPort string) net.Conn {
+func connectWithRetry(serverIP string) net.Conn {
 	for {
-		log.Printf("Tentando conectar ao servidor em %s:%s...\n", serverIP, serverPort)
-		conn, err := net.Dial("tcp", serverIP+":"+serverPort)
+		log.Printf("Tentando conectar ao servidor em %s...\n", serverIP)
+		conn, err := net.Dial("tcp", serverIP)
 		if err == nil {
 			log.Println("Conexão estabelecida com sucesso!")
 			return conn
@@ -26,14 +26,13 @@ func connectWithRetry(serverIP, serverPort string) net.Conn {
 }
 
 func main() {
-	if len(os.Args) != 3 {
-		log.Fatal("Uso: go run user.go <server_ip> <port>")
+	if len(os.Args) != 2 {
+		log.Fatal("Uso: go run user.go <server_ip:port>")
 	}
 	serverIP := os.Args[1]
-	serverPort := os.Args[2]
 
 	// Usa a nova função resiliente
-	tcpConn := connectWithRetry(serverIP, serverPort)
+	tcpConn := connectWithRetry(serverIP)
 	defer func() {
 		if tcpConn != nil {
 			tcpConn.Close()
@@ -96,7 +95,7 @@ func main() {
 				tcpConn.Close() // Fecha o socket quebrado
 				
 				// Trava a execução e tenta reconectar
-				tcpConn = connectWithRetry(serverIP, serverPort)
+				tcpConn = connectWithRetry(serverIP)
 				
 				// Quando reconectar, o loop 'for' vai rodar novamente tentando dar o Write
 				continue
