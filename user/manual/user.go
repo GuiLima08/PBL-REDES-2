@@ -11,7 +11,10 @@ import (
 	"time"
 )
 
-// Função que fica tentando conectar infinitamente a cada 5 segundos
+// Tenta estabelecer uma conexão TCP de forma resiliente com
+// o endereço serverIP. Se o servidor estiver indisponível, a função entra
+// em um loop de repetição com pausas de 5 segundos até que a conexão seja
+// bem-sucedida, retornando o objeto net.Conn.
 func connectWithRetry(serverIP string) net.Conn {
 	for {
 		log.Printf("Tentando conectar ao servidor em %s...\n", serverIP)
@@ -25,13 +28,17 @@ func connectWithRetry(serverIP string) net.Conn {
 	}
 }
 
+// Realiza o parsing da entrada do usuário, valida as regras
+// de formatação (prioridade de 1 a 10 e tempo positivo)
+// e envia a carga formatada para o servidor. Possui um mecanismo
+// de retenção interno para reenviar o último comando digitado
+// caso a conexão caia no exato momento do envio.
 func main() {
 	if len(os.Args) != 2 {
 		log.Fatal("Uso: go run user.go <server_ip:port>")
 	}
 	serverIP := os.Args[1]
 
-	// Usa a nova função resiliente
 	tcpConn := connectWithRetry(serverIP)
 	defer func() {
 		if tcpConn != nil {
@@ -87,20 +94,16 @@ func main() {
 
 		mensagem := fmt.Sprintf("%s\n", "P/"+texto)
 
-		// Loop de envio seguro: se a conexão cair, ele reconecta e envia o mesmo processo
 		for {
 			_, err := tcpConn.Write([]byte(mensagem))
 			if err != nil {
 				log.Printf("\n-!- Conexão perdida ao enviar: %v", err)
-				tcpConn.Close() // Fecha o socket quebrado
+				tcpConn.Close() 
 				
-				// Trava a execução e tenta reconectar
 				tcpConn = connectWithRetry(serverIP)
 				
-				// Quando reconectar, o loop 'for' vai rodar novamente tentando dar o Write
 				continue
 			}
-			// Se o Write funcionou, sai do loop de reenvio
 			break
 		}
 

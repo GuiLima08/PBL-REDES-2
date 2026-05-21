@@ -9,7 +9,10 @@ import (
 	"time"
 )
 
-// Função de reconexão cíclica
+// Tenta estabelecer uma conexão TCP com o servidor localizado
+// em serverIP. Em caso de falha, a função bloqueia a execução e realiza
+// tentativas infinitas de reconexão a cada 5 segundos até obter sucesso,
+// retornando a conexão ativa e pronta para envio de dados.
 func connectWithRetry(serverIP string) net.Conn {
 	for {
 		log.Printf("Tentando conectar ao servidor em %s...\n", serverIP)
@@ -23,13 +26,16 @@ func connectWithRetry(serverIP string) net.Conn {
 	}
 }
 
+// Inicializa o sensor, estabelece a conexão primária com o servidor
+// e entra em um loop infinito de geração de processos. O envio é protegido
+// por um mecanismo de retenção que garante que, se a rede cair, o processo
+// gerado não seja perdido, sendo enviado assim que a conexão for reestabelecida.
 func main() {
 	if len(os.Args) != 2 {
 		log.Fatal("Uso: go run sensor.go <server_ip:port>")
 	}
 	serverIP := os.Args[1]
 
-	// Inicia a conexão
 	tcpConn := connectWithRetry(serverIP)
 	defer func() {
 		if tcpConn != nil {
@@ -40,7 +46,6 @@ func main() {
 	fmt.Println("Enviando processos automaticamente...")
 
 	for {
-		// Gera o tempo antes para poder enviar de 5 em 5 segundos
 		time.Sleep(5 * time.Second)
 
 		priority := rand.Intn(10) + 1
@@ -49,17 +54,14 @@ func main() {
 		texto := fmt.Sprintf("%d,%d", priority, duration)
 		mensagem := fmt.Sprintf("%s\n", "P/"+texto)
 
-		// Loop de envio seguro
 		for {
 			_, err := tcpConn.Write([]byte(mensagem))
 			if err != nil {
 				log.Printf("-!- Conexão perdida ao enviar: %v", err)
 				tcpConn.Close()
 				
-				// Reconecta
 				tcpConn = connectWithRetry(serverIP)
 				
-				// Após conectar, tenta dar o Write da mensagem pendente novamente
 				continue
 			}
 			break
