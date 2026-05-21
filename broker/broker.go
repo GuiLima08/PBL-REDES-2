@@ -15,37 +15,44 @@ import (
 )
 
 var (
-	clientes = make(map[net.Conn]int)
-	clientMU = sync.RWMutex{}
-	queueMU  = sync.RWMutex{}
+	clientes = make(map[net.Conn]int) // Mapa de clientes e um inteiro para hash de processos
+	clientMU = sync.RWMutex{}		  // Mutex para mapa de clientes
+	queueMU  = sync.RWMutex{}		  // Mutex para fila de prioridade Queue
 
-	// Dicionário de drones conectados. Se o ponteiro for nil, o drone está livre.
-	drones  = make(map[net.Conn]*Process)
-	droneMU = sync.RWMutex{}
+	drones  = make(map[net.Conn]*Process) // Mapa de drones e ponteiro do processo dado
+	droneMU = sync.RWMutex{}			  // Mutex para lista de drones
 
+	Queue = make(PriorityQueue, 0) // Fila de prioridade para processos
 
-	Queue = make(PriorityQueue, 0) // Inicializa a fila de processos
+	adjacentBrokers = make(map[string]net.Conn) // Mapa de brokers adjacentes e suas conexões
+	knownDroneAddrs = make(map[string]string)   // Mapa do endereço de brokers vizinhos com sua porta de drones (para compartilhamento de drones)
+	adjMU           = sync.RWMutex{}			// Mutex para mapa de brokers adjacentes
 
-	adjacentBrokers = make(map[string]net.Conn)
-	
-	// NOVO: Dicionário que mapeia a conexão com o endereço exato do drone vizinho
-	knownDroneAddrs = make(map[string]string) 
-	adjMU           = sync.RWMutex{}
-	
-	portaDrones string // O endereço (porta) onde este broker ouve drones
+	portaDrones string // Porta de drones do broker
 )
 
+
+// Representa uma tarefa individual submetida por um cliente para ser executada.
 type Process struct {
-	Client   string
-	ID       string
-	Priority int
-	TimeLeft int
+	Client   string // ID do cliente
+	
+	ID       string // ID do processo
+
+	Priority int    // Prioridade do processo (1 a 10)
+
+	TimeLeft int    // Tempo restante para o processo ser concluído (segundos)
 }
 
+
+// PriorityQueue implementa o pacote container/heap para gerenciar a fila de processos.
+// A ordenação garante que o processo com maior prioridade e, em caso de empate,
+// menor tempo de execução, seja sempre o primeiro a ser atendido.
 type PriorityQueue []Process
 
-func (pq PriorityQueue) Len() int { return len(pq) }
 
+// Less compara dois elementos da fila e estabelece a regra de ordenação:
+// Compara o atributo prioridade primeiro, e desempate é decidido pelo
+// processo mais rápido.
 func (pq PriorityQueue) Less(i, j int) bool {
 	if pq[i].Priority != pq[j].Priority {
 		return pq[i].Priority > pq[j].Priority
@@ -53,10 +60,9 @@ func (pq PriorityQueue) Less(i, j int) bool {
 	return pq[i].TimeLeft < pq[j].TimeLeft
 }
 
+func (pq PriorityQueue) Len() int { return len(pq) }
 func (pq PriorityQueue) Swap(i, j int) { pq[i], pq[j] = pq[j], pq[i] }
-
 func (pq *PriorityQueue) Push(x any) { *pq = append(*pq, x.(Process)) }
-
 func (pq *PriorityQueue) Pop() any {
 	old := *pq
 	n := len(old)
@@ -65,6 +71,9 @@ func (pq *PriorityQueue) Pop() any {
 	return item
 }
 
+
+// main inicializa as configurações globais do Broker, sobe os servidores TCP em
+// goroutines separadas e executa um loop de monitoramento de status do sistema.
 func main() {
 	if len(os.Args) < 4 {
 		log.Fatalf("ERR: Incorrect command usage\nCorrect usage: go run server.go <p2p_port> <client_port> <drone_port> <broker1_ip:port> ...")
@@ -99,12 +108,10 @@ func main() {
 
 		log.Printf("--- Status Atual ---")
 		log.Printf("Fila de Processos (%d):", len(Queue))
-		
-		// 1. Cria uma cópia exata da fila atual
+
 		filaExibicao := make([]Process, len(Queue))
 		copy(filaExibicao, Queue)
 
-		// 2. Ordena a cópia linearmente seguindo a mesma regra do seu Heap
 		sort.Slice(filaExibicao, func(i, j int) bool {
 			if filaExibicao[i].Priority != filaExibicao[j].Priority {
 				return filaExibicao[i].Priority > filaExibicao[j].Priority
@@ -112,7 +119,6 @@ func main() {
 			return filaExibicao[i].TimeLeft < filaExibicao[j].TimeLeft
 		})
 
-		// 3. Printa a cópia (agora visualmente ordenada)
 		for _, process := range filaExibicao {
 			log.Printf("  - %+v", process)
 		}
@@ -129,13 +135,13 @@ func main() {
 
 		log.Printf("--------------------")
 		log.Printf("Sensores Conectados (%d):", len(clientes))
-		for conn := range clientes{
+		for conn := range clientes {
 			log.Printf("  - Sensor %s", conn.RemoteAddr().String())
 		}
 
 		log.Printf("--------------------")
 		log.Printf("Brokers vizinhos (%d):", len(adjacentBrokers))
-		for addr := range adjacentBrokers{
+		for addr := range adjacentBrokers {
 			log.Printf("  - Broker %s", addr)
 		}
 
@@ -144,6 +150,9 @@ func main() {
 	}
 }
 
+
+// Cria um listener em uma determinada porta e lida com múltiplas
+// conexões de entrada despachando-as para a função handler.
 func iniciarServidorTCP(nome, porta string, handler func(net.Conn)) {
 	listener, err := net.Listen("tcp", porta)
 	if err != nil {
@@ -161,6 +170,8 @@ func iniciarServidorTCP(nome, porta string, handler func(net.Conn)) {
 	}
 }
 
+
+// Verifica se o processo "a" tem precedência de execução sobre o processo "b".
 func isHigherPriority(a, b Process) bool {
 	if a.Priority != b.Priority {
 		return a.Priority > b.Priority
@@ -168,6 +179,8 @@ func isHigherPriority(a, b Process) bool {
 	return a.TimeLeft < b.TimeLeft
 }
 
+
+// Verifica se o processo "a" é menos importante que o processo "b".
 func isWorsePriority(a, b Process) bool {
 	if a.Priority != b.Priority {
 		return a.Priority < b.Priority
@@ -175,6 +188,10 @@ func isWorsePriority(a, b Process) bool {
 	return a.TimeLeft > b.TimeLeft
 }
 
+
+// Avalia a fila de pendências e distribui processos para drones disponíveis.
+// Realiza a preempção interrompendo um drone em execução caso surja um processo
+// com prioridade consideravelmente maior na fila.
 func dispatch() {
 	queueMU.Lock()
 	droneMU.Lock()
@@ -219,6 +236,9 @@ func dispatch() {
 	}
 }
 
+
+// Processa uma conexão conn de entrada de outro broker vizinho, lidando com
+// os handshakes iniciais e respondendo a eventuais requisições de empréstimo de drones.
 func handleBroker(conn net.Conn) {
 	remoteAddr := conn.RemoteAddr().String()
 	ipPedinte, _, _ := net.SplitHostPort(remoteAddr)
@@ -227,7 +247,6 @@ func handleBroker(conn net.Conn) {
 	adjacentBrokers[remoteAddr] = conn
 	adjMU.Unlock()
 
-	// --- HANDSHAKE INICIAL --- Envia minha porta de drones para o broker que conectou
 	minhaPorta := strings.TrimPrefix(portaDrones, ":")
 	conn.Write([]byte("HELLO_BROKER/" + minhaPorta + "\n"))
 
@@ -235,7 +254,7 @@ func handleBroker(conn net.Conn) {
 		log.Printf("[BROKER] Conexão encerrada: %s\n", remoteAddr)
 		adjMU.Lock()
 		delete(adjacentBrokers, remoteAddr)
-		delete(knownDroneAddrs, remoteAddr) // Limpa o vizinho
+		delete(knownDroneAddrs, remoteAddr)
 		adjMU.Unlock()
 		conn.Close()
 	}()
@@ -247,22 +266,21 @@ func handleBroker(conn net.Conn) {
 		linha := strings.TrimSpace(scanner.Text())
 		parts := strings.Split(linha, "/")
 
-		// --- RECEBIMENTO DO HANDSHAKE DO VIZINHO ---
 		if len(parts) >= 2 && parts[0] == "HELLO_BROKER" {
 			portaDoVizinho := parts[1]
 			addrDroneVizinho := ipPedinte + ":" + portaDoVizinho
-			
+
 			adjMU.Lock()
 			knownDroneAddrs[remoteAddr] = addrDroneVizinho
 			adjMU.Unlock()
-			
+
 			log.Printf("[HANDSHAKE] Vizinho %s registrou sua porta de drones: %s\n", ipPedinte, addrDroneVizinho)
 			continue
 		}
 
 		if len(parts) >= 2 && parts[0] == "REQ_DRONE" {
 			targetBrokerPort := parts[1]
-			targetBrokerAddr := ipPedinte + ":" + targetBrokerPort // Monta o endereço dinâmico!
+			targetBrokerAddr := ipPedinte + ":" + targetBrokerPort
 
 			queueMU.RLock()
 			hasProcesses := len(Queue) > 0
@@ -295,6 +313,10 @@ func handleBroker(conn net.Conn) {
 	}
 }
 
+
+// Atende cliente na conexão conn e sensores que enviam novas cargas de trabalho.
+// Ele efetua o parsing da string recebida, gera o ID correspondente, anexa
+// na fila e força a chamada do despachante.
 func handleClient(conn net.Conn) {
 	defer func() {
 		log.Printf("[CLIENTE] Conexão encerrada: %s\n", conn.RemoteAddr().String())
@@ -348,18 +370,20 @@ func handleClient(conn net.Conn) {
 
 			log.Printf("[CLIENTE %s] Processo criado na fila: %+v\n", clientIP, process)
 
-			// Tenta despachar a fila imediatamente apos receber um novo processo
 			dispatch()
 		}
 	}
 }
 
+
+// Gerencia a comunicação constante com um drone ativo (conexão conn). Responsável por
+// registrar a presença do drone, fornecer vizinhos para contingência e manipular
+// tarefas encerradas ou interrompidas que o drone devolve ao broker.
 func handleDrone(conn net.Conn) {
 	droneMU.Lock()
 	drones[conn] = nil
 	droneMU.Unlock()
 
-	// --- HANDSHAKE DRONE-BROKER ---
 	adjMU.RLock()
 	var neighbors []string
 	for _, addr := range knownDroneAddrs {
@@ -371,7 +395,6 @@ func handleDrone(conn net.Conn) {
 		neighborStr := strings.Join(neighbors, ",")
 		conn.Write([]byte("NEIGHBORS/" + neighborStr + "\n"))
 	}
-	// ---------------------------------
 
 	dispatch()
 
@@ -431,6 +454,9 @@ func handleDrone(conn net.Conn) {
 	}
 }
 
+
+// Estabelece e mantém ativamente uma conexão P2P de saída com o endereço de um broker
+// conhecido (brokerIP), possibilitando que ambos mapeiem as portas de Drones entre si.
 func dialBroker(brokerIP string) {
 	for {
 		conn, err := net.Dial("tcp", brokerIP)
@@ -445,20 +471,18 @@ func dialBroker(brokerIP string) {
 		adjacentBrokers[brokerIP] = conn
 		adjMU.Unlock()
 
-		// --- HANDSHAKE INICIAL ---
 		minhaPorta := strings.TrimPrefix(portaDrones, ":")
 		conn.Write([]byte("HELLO_BROKER/" + minhaPorta + "\n"))
 
 		scanner := bufio.NewScanner(conn)
 		for scanner.Scan() {
 			linha := scanner.Text()
-			
-			// --- RECEBIMENTO DO HANDSHAKE DO VIZINHO ---
+
 			if strings.HasPrefix(linha, "HELLO_BROKER/") {
 				portaDoVizinho := strings.Split(linha, "/")[1]
 				ip, _, _ := net.SplitHostPort(brokerIP)
 				addrDroneVizinho := ip + ":" + portaDoVizinho
-				
+
 				adjMU.Lock()
 				knownDroneAddrs[brokerIP] = addrDroneVizinho
 				adjMU.Unlock()
@@ -477,6 +501,9 @@ func dialBroker(brokerIP string) {
 	}
 }
 
+
+// Garante a criação de um hash simples ou identificador seguro a partir
+// do endereço do cliente acoplado a um indexador numérico para rastreio global.
 func genProcessId(conn net.Conn) string {
 	clientMU.Lock()
 	cont := strconv.Itoa(clientes[conn])
@@ -486,6 +513,12 @@ func genProcessId(conn net.Conn) string {
 	return fmt.Sprintf("%s-%04s", ip, cont)
 }
 
+
+// Atua como um supervisor assíncrono que sonda brokers adjacentes num
+// sistema de fila circular pedindo drones emprestados sempre que houver
+// processos encalhados na estrutura sem que existam workers imediatos.
+//
+// -ips: Lista de endereços de vizinhos
 func monitorAndAskForDrones(ips []string) {
 	index := 0
 	for {
