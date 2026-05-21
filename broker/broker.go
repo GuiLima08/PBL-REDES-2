@@ -35,11 +35,8 @@ var (
 // Representa uma tarefa individual submetida por um cliente para ser executada.
 type Process struct {
 	Client   string // ID do cliente
-	
 	ID       string // ID do processo
-
 	Priority int    // Prioridade do processo (1 a 10)
-
 	TimeLeft int    // Tempo restante para o processo ser concluído (segundos)
 }
 
@@ -76,7 +73,7 @@ func (pq *PriorityQueue) Pop() any {
 // goroutines separadas e executa um loop de monitoramento de status do sistema.
 func main() {
 	if len(os.Args) < 4 {
-		log.Fatalf("ERR: Incorrect command usage\nCorrect usage: go run server.go <p2p_port> <client_port> <drone_port> <broker1_ip:port> ...")
+		log.Fatalf("ERR: Uso incorreto do comando\nUso correto: go run server.go <p2p_port> <client_port> <drone_port> <broker1_ip:port> ...")
 	}
 
 	brokerIPs := os.Args[4:]
