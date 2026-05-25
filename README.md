@@ -54,6 +54,8 @@ A compilação do ecossistema é automatizada via Docker utilizando a técnica d
 
 ## Fluxo de Dados e Comunicação
 
+<img width="698" height="262" alt="redes2_fluxo" src="https://github.com/user-attachments/assets/e9482321-2b28-4a8c-8ecd-a57fa972406e" />
+
 O roteamento da malha utiliza TCP de ponta a ponta, suportado por um protocolo em texto plano altamente otimizado para as seguintes regras de negócio:
 
 1.  **Comunicação Inter-Setores (P2P entre Brokers):** * Os Brokers realizam um *Handshake* (`HELLO_BROKER`) informando suas portas de escuta. 
@@ -90,11 +92,11 @@ Para compilar localmente, abra o terminal na raiz do projeto e execute:
 Os Brokers devem ser os primeiros a subir. A sintaxe requer: `<porta_p2p> <porta_clientes> <porta_drones> [ips_vizinhos...]`.
 *Lembre-se de mapear as 3 portas no Docker via `-p`.*
 
-    # Exemplo subindo o Broker 1 (sem vizinhos inicialmente)
+    # Exemplo subindo o Broker sem vizinhos
     docker run -p 8001:8001 -p 8002:8002 -p 8003:8003 bdaemonis/hormuz-broker:latest 8001 8002 8003
     
-    # Exemplo subindo o Broker 2 (informando o IP do Broker 1 como vizinho)
-    docker run -p 9001:9001 -p 9002:9002 -p 9003:9003 bdaemonis/hormuz-broker:latest 9001 9002 9003 <ip_broker_1>:8001
+    # Exemplo subindo o Broker com vizinhos
+    docker run -p 9001:9001 -p 9002:9002 -p 9003:9003 bdaemonis/hormuz-broker:latest 9001 9002 9003 <ip_broker_1>:9001 <ip_broker_2>:9001 ...<ip_broker_N>:9001
 
 ### 2. Ativando a Frota Autônoma (Drones)
 Os drones devem ser apontados para a porta de drones de um Broker específico. Use o modo *detached* (`-d`).
